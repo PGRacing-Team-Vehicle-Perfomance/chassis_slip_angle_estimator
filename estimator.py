@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import math
 from SimpleKalman1D import SimpleKalman1D
 from KinematicKalmanFilter import KinematicKalmanFilter
+from SteeringKinematics import SteeringKinematics
 
 
 # All calculations are based on article
@@ -12,15 +13,16 @@ from KinematicKalmanFilter import KinematicKalmanFilter
 # and Witaya Wannasuphoprasiy
 
 # CONSTANT VEHICLE PARAMETERS
-# right now, these are hardcoded, but they should be read from a config file
-# or passed as arguments
-MASS_KG = 1000.0
-WHEELBASE_M = 2.5
-TRACK_WIDTH_M = 1.5
+# right now, these are values from CoG measurements excel sheet
+# steering ratio is mapped for a specific steering wheel angle
+# using wheel angles (steering_system.csv)
+MASS_KG = 184.0
+WHEELBASE_M = 1.530
+TRACK_WIDTH_M = 1.220
 L_F = 1.2  # CG_TO_FRONT_AXLE_M
 L_R = 1.3  # CG_TO_REAR_AXLE_M
+
 DT = 0.01  # time step between the samples in seconds (0.01s = 100Hz)
-STEERING_RATIO = 15.0  # steering wheel angle to wheel angle ratio
 
 # Axis conventions:
 # X is positive forward, Y is positive to the right, Z is positive up
@@ -29,6 +31,10 @@ STEERING_RATIO = 15.0  # steering wheel angle to wheel angle ratio
 # are positive to the right (clockwise)
 
 samples = pd.read_csv('telemetry.csv')
+samples = samples.dropna()
+
+steering_system = SteeringKinematics(calibration_csv="steering_system")
+
 
 data_for_estimation = samples[['front_right_wheel_speed',
                                'front_left_wheel_speed',
@@ -37,18 +43,15 @@ data_for_estimation = samples[['front_right_wheel_speed',
                                'steering_wheel_angle']]
 
 
-def estimate_side_kinematics(sample, wheel, eps=1e-5):
+def estimate_side_kinematics(sample, wheel, delta_rad, eps=1e-5):
     Vrx = sample['front_right_wheel_speed']
     Vlx = sample['front_left_wheel_speed']
     yaw_rate = sample['yaw_rate']
     a_x = sample['imu_acceleration_x']
     a_y = sample['imu_acceleration_y']
-    # TODO: write a function for converting SWA to wheel angle,
-    # in case we don't have STEERING_RATIO
-    delta = np.radians(sample['steering_wheel_angle']) / STEERING_RATIO
 
-    cos_d = np.cos(delta)
-    sin_d = np.sin(delta)
+    cos_d = np.cos(delta_rad)
+    sin_d = np.sin(delta_rad)
 
     if wheel.lower() == "right":
         sign = 1
@@ -120,28 +123,45 @@ for i in range(len(samples)):
         'steering_wheel_angle': raw_sample['steering_wheel_angle'],
     }
 
-    Vfx = filtered_sample['front_right_wheel_speed']
-    steering_angle = np.radians(
-        filtered_sample['steering_wheel_angle']) / STEERING_RATIO
+    Vrx = filtered_sample['front_right_wheel_speed']
+    Vlx = filtered_sample['front_left_wheel_speed']
     yaw_rate = filtered_sample['yaw_rate']
     a_y = filtered_sample['imu_acceleration_y']
+    delta_fl, delta_fr = steering_system.get_wheel_angles(
+        filtered_sample['steering_wheel_angle'])
 
     # FRONT RIGHT WHEEL SIDESLIP ANGLE (ALPHA_FR) ESTIMATION
-    alpha_fr_raw = estimate_side_kinematics(filtered_sample, "right")
+    alpha_fr_raw = estimate_side_kinematics(filtered_sample, "right", delta_fr)
     alpha_fr = kf_alpha_fr.update(alpha_fr_raw)
 
     # FRONT LEFT WHEEL SIDESLIP ANGLE (ALPHA_FL) ESTIMATION
-    alpha_fl_raw = estimate_side_kinematics(filtered_sample, "left")
+    alpha_fl_raw = estimate_side_kinematics(filtered_sample, "left", delta_fl)
     alpha_fl = kf_alpha_fl.update(alpha_fl_raw)
 
     alpha_fr_list.append(alpha_fr)
     alpha_fl_list.append(alpha_fl)
 
     # Estimation of Vx and Vy of the vehicle
-    Vx = ((Vfx / np.cos(alpha_fr)) * np.cos(steering_angle + alpha_fr)) - (
-        TRACK_WIDTH_M/2.0 * yaw_rate)
-    Vy = ((Vfx / np.cos(alpha_fr)) * np.sin(steering_angle + alpha_fr)) + (
+    # Vx = ((Vfx / np.cos(alpha_fr)) * np.cos(steering_angle + alpha_fr)) - (
+    #     TRACK_WIDTH_M/2.0 * yaw_rate)
+    # Vy = ((Vfx / np.cos(alpha_fr)) * np.sin(steering_angle + alpha_fr)) + (
+    #     L_F * yaw_rate)
+
+    # Velocity from the right wheel (note the sign - for TRACK_WIDTH_M / 2.0)
+    Vx_r = ((Vrx / np.cos(alpha_fr)) * np.cos(delta_fr + alpha_fr)) - (
+        TRACK_WIDTH_M / 2.0 * yaw_rate)
+    Vy_r = ((Vrx / np.cos(alpha_fr)) * np.sin(delta_fr + alpha_fr)) + (
         L_F * yaw_rate)
+
+    # Velocity from the left wheel (note the sign + for TRACK_WIDTH_M / 2.0)
+    Vx_l = ((Vlx / np.cos(alpha_fl)) * np.cos(delta_fl + alpha_fl)) + (
+        TRACK_WIDTH_M / 2.0 * yaw_rate)
+    Vy_l = ((Vlx / np.cos(alpha_fl)) * np.sin(delta_fl + alpha_fl)) + (
+        L_F * yaw_rate)
+
+    # Averaging the velocities from both wheels to get the vehicle's velocity
+    Vx = 0.5 * (Vx_r + Vx_l)
+    Vy = 0.5 * (Vy_r + Vy_l)
 
     # Chassis slip angle estimation based on the estimated Vx and Vy
     beta_raw = np.arctan2(Vy, Vx)
