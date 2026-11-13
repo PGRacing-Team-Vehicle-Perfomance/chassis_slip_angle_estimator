@@ -19,8 +19,8 @@ from SteeringKinematics import SteeringKinematics
 MASS_KG = 184.0
 WHEELBASE_M = 1.530
 TRACK_WIDTH_M = 1.220
-L_F = 1.2  # CG_TO_FRONT_AXLE_M
-L_R = 1.3  # CG_TO_REAR_AXLE_M
+L_F = 902.201/1000  # CG_TO_FRONT_AXLE_M
+L_R = WHEELBASE_M - L_F  # CG_TO_REAR_AXLE_M
 
 DT = 0.01  # time step between the samples in seconds (0.01s = 100Hz)
 
